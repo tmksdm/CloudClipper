@@ -18,6 +18,9 @@ build/
 dist/
 *.spec
 
+# FFmpeg (не храним в репозитории — слишком большой файл)
+ffmpeg/ffmpeg.exe
+
 # Системные файлы
 .DS_Store
 Thumbs.db

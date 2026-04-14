@@ -2,31 +2,77 @@
 
 Этот модуль содержит утилиты, которые используются в разных частях приложения:
 - Проверка наличия FFmpeg в системе
+- Определение пути к FFmpeg (встроенный или системный)
 - Парсинг строк времени (MM:SS, HH:MM:SS) в секунды и обратно
 - Валидация (проверка корректности) пользовательского ввода
 """
 
 import subprocess
+import os
+import sys
 import re
+
+
+def get_ffmpeg_path() -> str:
+    """
+    Определяет путь к ffmpeg.exe.
+
+    Логика поиска:
+    1. Сначала ищем ffmpeg.exe рядом с приложением (в папке ffmpeg/).
+       Это нужно для .exe-сборки — FFmpeg вложен в дистрибутив.
+    2. Если не нашли — возвращаем просто "ffmpeg", чтобы система
+       искала его в PATH (для разработчика, у которого FFmpeg установлен).
+
+    Порядок поиска «рядом с приложением»:
+    - Если запущены как .exe (PyInstaller): ищем в папке, где лежит .exe
+    - Если запущены как Python-скрипт: ищем в корне проекта
+
+    Возвращает:
+        Полный путь к ffmpeg.exe, или просто "ffmpeg" если встроенный не найден.
+    """
+    # --- Вариант 1: Мы внутри .exe (PyInstaller) ---
+    # При сборке через --onedir, .exe лежит в dist/CloudClipper/.
+    # Рядом с ним мы положим папку ffmpeg/ с ffmpeg.exe.
+    # sys.executable — путь к самому .exe файлу.
+    if getattr(sys, 'frozen', False):
+        # frozen = True означает, что мы запущены из .exe
+        exe_dir = os.path.dirname(sys.executable)
+        bundled_path = os.path.join(exe_dir, "ffmpeg", "ffmpeg.exe")
+        if os.path.isfile(bundled_path):
+            return bundled_path
+
+    # --- Вариант 2: Обычный запуск из Python (разработка) ---
+    # Ищем в папке ffmpeg/ в корне проекта.
+    # __file__ — путь к этому файлу (core/utils.py).
+    # Поднимаемся на два уровня вверх: core/ → корень проекта.
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    local_path = os.path.join(project_root, "ffmpeg", "ffmpeg.exe")
+    if os.path.isfile(local_path):
+        return local_path
+
+    # --- Вариант 3: Системный FFmpeg (из PATH) ---
+    # Если встроенный не найден — пусть система ищет сама.
+    return "ffmpeg"
 
 
 def check_ffmpeg() -> bool:
     """
-    Проверяет, установлен ли FFmpeg и доступен ли он из командной строки.
+    Проверяет, установлен ли FFmpeg и доступен ли он.
 
-    FFmpeg — это бесплатная программа для обработки видео и аудио.
-    Наше приложение использует её для вырезания фрагментов из видео.
-    FFmpeg должен быть установлен отдельно и добавлен в PATH
-    (системную переменную, которая позволяет запускать программы из любой папки).
+    Сначала ищет встроенный FFmpeg (в папке ffmpeg/ рядом с приложением),
+    затем системный (в PATH). Если найден — выводит его версию.
+    Если не найден — выводит инструкцию по установке.
 
-    Если FFmpeg найден — выводит его версию.
-    Если не найден — выводит инструкцию по установке и завершает программу.
+    Возвращает:
+        True — FFmpeg найден и работает.
+        False — FFmpeg не найден.
     """
+    ffmpeg_path = get_ffmpeg_path()
+
     try:
-        # Запускаем команду "ffmpeg -version" и читаем результат.
-        # subprocess.run — это способ запустить внешнюю программу из Python.
+        # Запускаем "ffmpeg -version" и читаем результат.
         result = subprocess.run(
-            ["ffmpeg", "-version"],
+            [ffmpeg_path, "-version"],
             capture_output=True,      # Перехватываем вывод программы
             text=True,                # Читаем вывод как текст (не байты)
             creationflags=subprocess.CREATE_NO_WINDOW  # Не показываем чёрное окно консоли
@@ -34,7 +80,13 @@ def check_ffmpeg() -> bool:
 
         # Берём первую строку вывода — в ней содержится версия FFmpeg
         first_line = result.stdout.strip().split("\n")[0]
-        print(f"FFmpeg найден: {first_line}")
+
+        # Определяем, встроенный это FFmpeg или системный
+        if ffmpeg_path != "ffmpeg":
+            print(f"FFmpeg найден (встроенный): {ffmpeg_path}")
+        else:
+            print(f"FFmpeg найден (системный)")
+        print(f"  {first_line}")
         return True
 
     except FileNotFoundError:

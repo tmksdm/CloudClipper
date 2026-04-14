@@ -10,4 +10,4 @@ DEFAULT_DOWNLOAD_PATH = os.path.join(os.path.expanduser("~"), "Downloads")
 APP_NAME = "CloudClipper"
 
 # Версия
-APP_VERSION = "0.1.0"
+APP_VERSION = "260414"

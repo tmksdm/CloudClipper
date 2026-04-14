@@ -21,6 +21,7 @@ CustomTkinter — это надстройка над стандартным tkin
 """
 
 import os
+import sys
 import threading
 import tkinter as tk
 import customtkinter as ctk
@@ -28,6 +29,40 @@ from config import DEFAULT_DOWNLOAD_PATH, APP_NAME, APP_VERSION
 from providers.yadisk import YandexDiskProvider
 from core.downloader import download_fragment
 from core.utils import validate_url, validate_time_format, validate_time_range
+
+
+def _get_resource_path(relative_path: str) -> str:
+    """
+    Возвращает правильный путь к файлу ресурса (иконка, картинка и т.д.).
+
+    Зачем это нужно:
+    Когда мы запускаем приложение как обычный Python-скрипт, файлы лежат
+    в папке проекта. Но когда PyInstaller собирает .exe, он может
+    поместить ресурсы во временную папку. Путь к этой папке хранится
+    в специальной переменной sys._MEIPASS.
+
+    Эта функция проверяет: если мы внутри .exe — ищет файл в папке
+    PyInstaller. Если нет — ищет в обычной папке проекта.
+
+    Аргументы:
+        relative_path: Путь к файлу относительно корня проекта.
+                       Например: "assets/icon.ico"
+
+    Возвращает:
+        Абсолютный путь к файлу.
+    """
+    # sys._MEIPASS — специальная переменная, которую создаёт PyInstaller.
+    # Она указывает на временную папку, куда распакованы ресурсы.
+    # Если этой переменной нет — значит, мы запущены как обычный скрипт.
+    if hasattr(sys, '_MEIPASS'):
+        base_path = sys._MEIPASS
+    else:
+        # Обычный запуск из Python — файлы лежат в папке проекта.
+        # os.path.dirname(__file__) — папка, где лежит этот файл (gui/).
+        # os.path.dirname(...) ещё раз — папка на уровень выше (корень проекта).
+        base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    return os.path.join(base_path, relative_path)
 
 
 def _get_inner_entry(ctk_entry):
@@ -182,6 +217,9 @@ class App(ctk.CTk):
         self.minsize(500, 400)              # Минимальный размер окна
         self.resizable(True, True)          # Можно менять размер
 
+        # --- Устанавливаем иконку окна ---
+        self._set_app_icon()
+
         # Тема оформления: "dark" (тёмная), "light" (светлая), "system" (как в системе)
         ctk.set_appearance_mode("system")
         # Цветовая схема: "blue", "green", "dark-blue"
@@ -201,6 +239,23 @@ class App(ctk.CTk):
 
         # Создаём все элементы интерфейса
         self._create_widgets()
+
+    def _set_app_icon(self):
+        """
+        Устанавливает иконку приложения в заголовке окна и на панели задач.
+
+        Иконка загружается из файла assets/icon.ico.
+        Если файл не найден — просто пропускаем (окно будет со стандартной иконкой).
+        """
+        try:
+            icon_path = _get_resource_path(os.path.join("assets", "icon.ico"))
+            if os.path.exists(icon_path):
+                # iconbitmap — метод tkinter для установки иконки окна.
+                # Он принимает путь к .ico файлу.
+                self.iconbitmap(icon_path)
+        except Exception:
+            # Если что-то пошло не так — не критично, просто будет стандартная иконка
+            pass
 
     def _create_widgets(self):
         """
