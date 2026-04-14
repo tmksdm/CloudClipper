@@ -22,10 +22,140 @@ CustomTkinter — это надстройка над стандартным tkin
 
 import os
 import threading
+import tkinter as tk
 import customtkinter as ctk
 from config import DEFAULT_DOWNLOAD_PATH, APP_NAME, APP_VERSION
 from providers.yadisk import YandexDiskProvider
 from core.downloader import download_fragment
+from core.utils import validate_url, validate_time_format, validate_time_range
+
+
+def _get_inner_entry(ctk_entry):
+    """
+    Получает настоящий tk.Entry, скрытый внутри CTkEntry.
+
+    CustomTkinter оборачивает стандартные виджеты tkinter в свои классы.
+    CTkEntry — это не настоящее поле ввода, а «обёртка» с красивым
+    оформлением. Внутри неё спрятан настоящий tk.Entry, который
+    и обрабатывает ввод текста и события клавиатуры.
+
+    Чтобы привязать обработчики клавиш, нам нужен именно этот
+    внутренний виджет, потому что события клавиатуры приходят в него,
+    а не в обёртку.
+
+    Аргументы:
+        ctk_entry: Виджет CTkEntry.
+
+    Возвращает:
+        Внутренний tk.Entry виджет.
+    """
+    return ctk_entry._entry
+
+
+def _setup_hotkeys(ctk_entry):
+    """
+    Привязывает Ctrl+C/V/A/X так, чтобы они работали В ЛЮБОЙ раскладке.
+
+    Проблема: tkinter привязывает горячие клавиши по «символу» клавиши
+    (keysym). В русской раскладке символы другие (М вместо V, С вместо C),
+    и tkinter их не распознаёт — keysym приходит как '??'.
+
+    Решение: мы перехватываем ВСЕ нажатия клавиш (<Key>) на ВНУТРЕННЕМ
+    виджете (настоящий tk.Entry внутри CTkEntry) и проверяем числовой
+    код физической клавиши (keycode). Этот код не зависит от раскладки:
+    клавиша V всегда имеет keycode=86, неважно, русская раскладка
+    или английская.
+
+    Важный нюанс: мы обрабатываем только случаи, когда keysym == '??'
+    (то есть tkinter не распознал символ — значит раскладка не английская).
+    Если keysym нормальный ('v', 'c' и т.д.) — значит стандартная
+    обработка tkinter справится сама, и мы не вмешиваемся.
+
+    Коды клавиш (Windows):
+        keycode 65 = клавиша A (Ф в русской)
+        keycode 67 = клавиша C (С в русской)
+        keycode 86 = клавиша V (М в русской)
+        keycode 88 = клавиша X (Ч в русской)
+
+    Аргументы:
+        ctk_entry: Виджет CTkEntry, к которому привязываем горячие клавиши.
+    """
+    # Получаем внутренний виджет — именно он принимает события клавиатуры
+    inner = _get_inner_entry(ctk_entry)
+
+    def on_key(event):
+        """
+        Обработчик ВСЕХ нажатий клавиш на внутреннем виджете.
+        Срабатывает только когда:
+          1) Зажат Ctrl
+          2) keysym == '??' (tkinter не распознал символ = не английская раскладка)
+        В этом случае определяем действие по keycode (физическому коду клавиши).
+        """
+        # Проверяем, зажат ли Ctrl.
+        # event.state — число, в котором каждый бит = модификатор.
+        # Бит 2 (значение 4) = Ctrl.
+        ctrl_pressed = event.state & 4
+
+        if not ctrl_pressed:
+            return  # Ctrl не зажат — обычный ввод, не трогаем
+
+        # Если keysym нормальный (не '??') — tkinter справится сам.
+        # Мы вмешиваемся ТОЛЬКО когда tkinter не распознал клавишу.
+        if event.keysym != '??':
+            return  # Стандартная обработка tkinter, не мешаем
+
+        # tkinter не распознал клавишу — определяем действие по keycode
+        if event.keycode == 86:  # Клавиша V (М в русской)
+            inner.event_generate("<<Paste>>")
+            return "break"  # "break" = не передавать событие дальше
+
+        if event.keycode == 67:  # Клавиша C (С в русской)
+            inner.event_generate("<<Copy>>")
+            return "break"
+
+        if event.keycode == 65:  # Клавиша A (Ф в русской)
+            inner.select_range(0, tk.END)
+            return "break"
+
+        if event.keycode == 88:  # Клавиша X (Ч в русской)
+            inner.event_generate("<<Cut>>")
+            return "break"
+
+    # Привязываем обработчик к ВНУТРЕННЕМУ виджету
+    inner.bind("<Key>", on_key)
+
+
+def _setup_context_menu(ctk_entry):
+    """
+    Добавляет контекстное меню (правая кнопка мыши) к полю ввода.
+
+    CustomTkinter не создаёт контекстное меню автоматически,
+    поэтому мы делаем его вручную. Меню содержит стандартные пункты:
+    «Вырезать», «Копировать», «Вставить», «Выделить всё».
+
+    Привязываем меню к внутреннему виджету (tk.Entry), потому что
+    именно он получает события мыши.
+
+    Аргументы:
+        ctk_entry: Виджет CTkEntry, к которому добавляем меню.
+    """
+    inner = _get_inner_entry(ctk_entry)
+
+    # Создаём всплывающее меню. tearoff=0 убирает пунктирную линию сверху.
+    menu = tk.Menu(inner, tearoff=0)
+    menu.add_command(label="Вырезать", command=lambda: inner.event_generate("<<Cut>>"))
+    menu.add_command(label="Копировать", command=lambda: inner.event_generate("<<Copy>>"))
+    menu.add_command(label="Вставить", command=lambda: inner.event_generate("<<Paste>>"))
+    menu.add_separator()
+    menu.add_command(label="Выделить всё", command=lambda: inner.select_range(0, tk.END))
+
+    def show_menu(event):
+        """Показывает меню в позиции курсора мыши."""
+        inner.focus_set()
+        menu.tk_popup(event.x_root, event.y_root)
+
+    # Привязываем к правой кнопке мыши на внутреннем виджете
+    inner.bind("<Button-3>", show_menu)
 
 
 class App(ctk.CTk):
@@ -64,6 +194,10 @@ class App(ctk.CTk):
 
         # Провайдер Яндекс.Диска — создаём один раз, используем многократно
         self.provider = YandexDiskProvider()
+
+        # Флаг: идёт ли сейчас скачивание. Нужен, чтобы не запускать
+        # повторное скачивание, если пользователь как-то нажмёт кнопку дважды.
+        self._is_downloading = False
 
         # Создаём все элементы интерфейса
         self._create_widgets()
@@ -190,13 +324,24 @@ class App(ctk.CTk):
         self.button_download.pack(pady=(5, 15))
 
         # === Статусная строка ===
+        # wraplength — максимальная ширина текста в пикселях, после чего
+        # текст переносится на следующую строку. Это нужно для длинных
+        # сообщений об ошибках — без этого текст может выйти за окно.
         self.label_status = ctk.CTkLabel(
             self,
             text="Готов к работе",
             font=ctk.CTkFont(size=12),
-            text_color="gray"
+            text_color="gray",
+            wraplength=550
         )
         self.label_status.pack(pady=(0, 10))
+
+        # === Настраиваем горячие клавиши и контекстное меню ===
+        # Применяем ко всем полям ввода, куда пользователь может вводить текст.
+        # Поле папки (entry_folder) пропускаем — оно только для чтения.
+        for entry in [self.entry_url, self.entry_start, self.entry_end]:
+            _setup_hotkeys(entry)
+            _setup_context_menu(entry)
 
     # ──────────────────────────────────────────────
     #  Методы обновления интерфейса
@@ -259,6 +404,52 @@ class App(ctk.CTk):
             self.download_folder.set(folder)
 
     # ──────────────────────────────────────────────
+    #  Валидация ввода
+    # ──────────────────────────────────────────────
+
+    def _validate_inputs(self, url: str, start_time: str, end_time: str) -> str | None:
+        """
+        Последовательно проверяет все поля ввода.
+
+        Проверки идут в порядке приоритета:
+        1. Ссылка — не пустая, похожа на Яндекс.Диск
+        2. Время начала — заполнено, правильный формат
+        3. Время конца — заполнено, правильный формат
+        4. Начало < конца
+
+        Аргументы:
+            url:        Текст из поля ссылки.
+            start_time: Текст из поля «Начало».
+            end_time:   Текст из поля «Конец».
+
+        Возвращает:
+            None — если все проверки пройдены (ошибок нет).
+            Строку с первой найденной ошибкой — если что-то не так.
+        """
+        # Проверка ссылки
+        url_error = validate_url(url)
+        if url_error:
+            return url_error
+
+        # Проверка формата времени начала
+        start_error = validate_time_format(start_time, "начала")
+        if start_error:
+            return start_error
+
+        # Проверка формата времени конца
+        end_error = validate_time_format(end_time, "конца")
+        if end_error:
+            return end_error
+
+        # Проверка: начало < конец
+        range_error = validate_time_range(start_time, end_time)
+        if range_error:
+            return range_error
+
+        # Всё в порядке
+        return None
+
+    # ──────────────────────────────────────────────
     #  Скачивание фрагмента
     # ──────────────────────────────────────────────
 
@@ -266,31 +457,34 @@ class App(ctk.CTk):
         """
         Обработчик нажатия кнопки «Скачать фрагмент».
 
-        Считывает данные из полей ввода, проверяет, что они заполнены,
-        и запускает скачивание в отдельном потоке (чтобы окно не зависло).
+        Считывает данные из полей ввода, запускает валидацию,
+        и если всё в порядке — запускает скачивание в отдельном потоке.
         """
+        # Защита от повторного нажатия
+        if self._is_downloading:
+            return
+
         # --- 1. Считываем данные из полей ---
         url = self.entry_url.get().strip()
         start_time = self.entry_start.get().strip()
         end_time = self.entry_end.get().strip()
         folder = self.download_folder.get()
 
-        # --- 2. Простая проверка: все поля заполнены? ---
-        if not url:
-            self._set_status("Ошибка: вставьте ссылку на видео", "red")
+        # --- 2. Валидация всех полей ---
+        error = self._validate_inputs(url, start_time, end_time)
+        if error:
+            self._set_status(f"⚠ {error}", "red")
             return
 
-        if not start_time:
-            self._set_status("Ошибка: укажите время начала", "red")
+        # --- 3. Проверяем, что папка для сохранения существует ---
+        if not os.path.isdir(folder):
+            self._set_status("⚠ Папка для сохранения не найдена. Выберите другую.", "red")
             return
 
-        if not end_time:
-            self._set_status("Ошибка: укажите время конца", "red")
-            return
-
-        # --- 3. Блокируем интерфейс и запускаем скачивание ---
+        # --- 4. Блокируем интерфейс и запускаем скачивание ---
+        self._is_downloading = True
         self._set_ui_enabled(False)
-        self._set_status("Получаем ссылку на скачивание...", "orange")
+        self._set_status("⏳ Получаем ссылку на скачивание...", "orange")
 
         # threading.Thread — это способ запустить функцию параллельно.
         # daemon=True означает: если пользователь закроет окно, поток тоже завершится.
@@ -327,7 +521,7 @@ class App(ctk.CTk):
 
             # Обновляем статус (через главный поток!)
             self.after(0, lambda: self._set_status(
-                "Скачиваем фрагмент через FFmpeg...", "orange"
+                "⏳ Скачиваем фрагмент через FFmpeg...", "orange"
             ))
 
             # --- Шаг 2: Формируем путь для сохранения ---
@@ -344,9 +538,25 @@ class App(ctk.CTk):
             # --- Шаг 4: Успех! ---
             self.after(0, lambda: self._on_download_success(saved_path))
 
-        except (ValueError, ConnectionError, RuntimeError) as e:
-            # Если произошла ошибка — показываем её
+        except ValueError as e:
+            # Ошибки валидации или API (неверная ссылка, файл не найден и т.д.)
             error_msg = str(e)
+            self.after(0, lambda: self._on_download_error(error_msg))
+
+        except ConnectionError as e:
+            # Ошибки сети (нет интернета, сервер не отвечает)
+            error_msg = str(e)
+            self.after(0, lambda: self._on_download_error(error_msg))
+
+        except RuntimeError as e:
+            # Ошибки FFmpeg (не найден, вернул ошибку)
+            error_msg = str(e)
+            self.after(0, lambda: self._on_download_error(error_msg))
+
+        except Exception as e:
+            # Любая другая непредвиденная ошибка.
+            # Это «ловушка на всякий случай» — чтобы приложение не падало молча.
+            error_msg = f"Непредвиденная ошибка: {e}"
             self.after(0, lambda: self._on_download_error(error_msg))
 
     def _on_download_success(self, saved_path: str):
@@ -356,8 +566,9 @@ class App(ctk.CTk):
         """
         # Показываем только имя файла, а не полный путь (он может быть длинным)
         filename = os.path.basename(saved_path)
-        self._set_status(f"Готово! Сохранено: {filename}", "green")
+        self._set_status(f"✅ Готово! Сохранено: {filename}", "green")
         self._set_ui_enabled(True)
+        self._is_downloading = False
         print(f"[OK] Файл сохранён: {saved_path}")
 
     def _on_download_error(self, error_msg: str):
@@ -365,6 +576,7 @@ class App(ctk.CTk):
         Вызывается в главном потоке при ошибке скачивания.
         Показывает сообщение об ошибке и разблокирует интерфейс.
         """
-        self._set_status(f"Ошибка: {error_msg}", "red")
+        self._set_status(f"❌ {error_msg}", "red")
         self._set_ui_enabled(True)
+        self._is_downloading = False
         print(f"[ОШИБКА] {error_msg}")
